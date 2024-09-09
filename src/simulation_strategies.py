@@ -1,6 +1,28 @@
 import numpy as np
 from numba import jit
 
+def const_rho_func(self):
+    return self.m_tot / (4/3 * np.pi * self.r_max**3)
+
+def const_j_func(self):
+    return self.j_coef
+
+def gmr_j_func(self):
+    return self.j_coef * np.sqrt(self.G * self.m_enc * self.r_ta)
+
+def r_is_r_ta_func(self):
+        return self.r
+
+def hubble_v_func(self):
+    return self.H * self.r
+
+def keep_edges_shell_vol_func(self):
+    # Calculate the volumes of spherical shells
+    r_inner = np.zeros_like(self.r)
+    r_inner[1:] = self.r[:-1]
+    volumes = 4/3 * np.pi * (self.r**3 - r_inner**3)
+    return volumes
+
 class TurnaroundFunctions:
     @staticmethod
     def r_is_r_ta_func(self):
