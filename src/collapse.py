@@ -1,32 +1,31 @@
 import numpy as np
 from functools import partial
 import h5py
-import re
 import logging
-
-# Create a logger
-logger = logging.getLogger(__name__)
-logger.setLevel(logging.INFO)
-
-# Create console handler and set level to debug
-ch = logging.StreamHandler()
-ch.setLevel(logging.DEBUG)
-
-# Create formatter
-formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-
-# Add formatter to ch
-ch.setFormatter(formatter)
-
-# Add ch to logger
-logger.addHandler(ch)
-
 from simulation_strategies import *
 
+# Setup logging
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
+ch = logging.StreamHandler()
+ch.setLevel(logging.DEBUG)
+formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+ch.setFormatter(formatter)
+logger.addHandler(ch)
 
 class SphericalCollapse:
     def __init__(self, config=None):
         # Default parameters
+        self._set_default_parameters()
+        
+        # Update if config dictionary is provided
+        if config:
+            self._update_from_config(config)
+                    
+        self.setup()
+
+    def _set_default_parameters(self):
+        # Move all default parameter initialization here
         self.G = 1
         self.N = 100
         self.r_max = 1
@@ -82,21 +81,18 @@ class SphericalCollapse:
         self.shell_thickness = None
         self.snapshots = []
         self.save_to_file = False
-        # Update if config dictionary is provided
-        if config:
-            for key, value in config.items():
-                if callable(value) and not isinstance(value, partial):
-                    setattr(self, key, partial(value, self))
-                else:
-                    setattr(self, key, value)
-                    
-        self.setup()
+
+    def _update_from_config(self, config):
+        for key, value in config.items():
+            if callable(value) and not isinstance(value, partial):
+                setattr(self, key, partial(value, self))
+            else:
+                setattr(self, key, value)
 
     def handle_reflections(self):
         inside_sphere = self.r < self.r_min
         self.r[inside_sphere] = 2 * self.r_min - self.r[inside_sphere]
-        self.v[inside_sphere] = -self.v[inside_sphere]  # Reverse velocity for elastic collision
-
+        self.v[inside_sphere] = -self.v[inside_sphere]
 
     def detect_shell_crossings(self):
         self.num_crossing = 0
@@ -147,30 +143,37 @@ class SphericalCollapse:
 
     def run(self):
         next_save_time = self.save_dt
-        next_progress_time = 0.1 * self.t_max  # Update progress every 10% of total time
+        next_progress_time = 0.1 * self.t_max
         progress_interval = 0.1 * self.t_max
+        
         while self.t < self.t_max:
-            # Call the stepper to update positions, velocities, and accelerations
-            self.stepper()
-            self.timescale_func()
-            self.timestep_func()
-            self.detect_shell_crossings()
-            # Save data if necessary
-            if self.t >= next_save_time:
-                # Update current energies
-                self.energy_func()
-                self.save()
-                next_save_time = self.t + self.save_dt
-
-            # Update progress
-            if self.t >= next_progress_time:
-                progress = (self.t / self.t_max) * 100
-                print(f"Progress: {progress:.1f}%")
-                next_progress_time += progress_interval
+            self._update_simulation()
+            self._save_if_necessary(next_save_time)
+            next_save_time = self._update_progress(next_progress_time, progress_interval)
 
         if self.save_to_file:
             self.save_to_hdf5()
         return self.get_results_dict()
+
+    def _update_simulation(self):
+        self.stepper()
+        self.timescale_func()
+        self.timestep_func()
+        self.detect_shell_crossings()
+
+    def _save_if_necessary(self, next_save_time):
+        if self.t >= next_save_time:
+            self.energy_func()
+            self.save()
+            return self.t + self.save_dt
+        return next_save_time
+
+    def _update_progress(self, next_progress_time, progress_interval):
+        if self.t >= next_progress_time:
+            progress = (self.t / self.t_max) * 100
+            print(f"Progress: {progress:.1f}%")
+            return next_progress_time + progress_interval
+        return next_progress_time
 
     def save(self):
         # Save relevant parameters of the simulation
@@ -240,17 +243,11 @@ class SphericalCollapse:
 
 
     def __str__(self):
-        def extract_function_name(func_repr):
-            match = re.search(r"<function (\w+) at", func_repr)
-            if match:
-                return match.group(1)
-            else:
-                return "Unknown function"
         result = []
         for attr_name, attr_value in self.__dict__.items():
             if callable(attr_value):
                 # If it's callable, print the attribute name
-                result.append(f"{attr_name}: {extract_function_name(str(attr_value))}")
+                result.append(f"{attr_name}: {attr_value.__name__}")
             else:
                 # Otherwise, print the attribute name and its value
                 result.append(f"{attr_name}: {attr_value}")
