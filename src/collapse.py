@@ -214,30 +214,18 @@ class SphericalCollapse:
             num_snapshots = len(self.snapshots)
             num_shells = len(self.snapshots[0]['r'])
             
-            # Create datasets
-            t_dset = hf.create_dataset('t', (num_snapshots,), dtype='float64')
-            dt_dset = hf.create_dataset('dt', (num_snapshots,), dtype='float64')
-            r_dset = hf.create_dataset('r', (num_snapshots, num_shells), dtype='float64')
-            v_dset = hf.create_dataset('v', (num_snapshots, num_shells), dtype='float64')
-            a_dset = hf.create_dataset('a', (num_snapshots, num_shells), dtype='float64')
-            m_enc_dset = hf.create_dataset('m_enc', (num_snapshots, num_shells), dtype='float64')
-            e_tot_dset = hf.create_dataset('e_tot', (num_snapshots, num_shells), dtype='float64')
-            e_g_dset = hf.create_dataset('e_g', (num_snapshots, num_shells), dtype='float64')
-            e_k_dset = hf.create_dataset('e_k', (num_snapshots, num_shells), dtype='float64')
-            e_r_dset = hf.create_dataset('e_r', (num_snapshots, num_shells), dtype='float64')
+            # Create datasets for all parameters in self.snapshots
+            datasets = {}
+            for key, value in self.snapshots[0].items():
+                if np.isscalar(value):
+                    datasets[key] = hf.create_dataset(key, (num_snapshots,), dtype='float64')
+                else:
+                    datasets[key] = hf.create_dataset(key, (num_snapshots, len(value)), dtype='float64')
 
             # Fill datasets
             for i, snapshot in enumerate(self.snapshots):
-                t_dset[i] = snapshot['t']
-                dt_dset[i] = snapshot['dt']
-                r_dset[i] = snapshot['r']
-                v_dset[i] = snapshot['v']
-                a_dset[i] = snapshot['a']
-                m_enc_dset[i] = snapshot['m_enc']
-                e_tot_dset[i] = snapshot['e_tot']
-                e_g_dset[i] = snapshot['e_g']
-                e_k_dset[i] = snapshot['e_k']
-                e_r_dset[i] = snapshot['e_r']
+                for key, value in snapshot.items():
+                    datasets[key][i] = value
 
         logger.info(f"Saved {num_snapshots} snapshots to {filename}")
 
