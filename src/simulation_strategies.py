@@ -34,23 +34,6 @@ class TurnaroundFunctions:
 
 
 class Steppers:
-    # @staticmethod
-    # @jit(nopython=True)
-    # def _velocity_verlet_step(r, v, a, dt, m_enc_func, a_func):
-    #     r_new = r + v * dt + 0.5 * a * dt**2
-    #     m_enc = m_enc_func(r_new)
-    #     a_new = a_func(r_new, m_enc)
-    #     v_new = v + 0.5 * (a + a_new) * dt
-    #     return r_new, v_new, a_new, m_enc
-
-    # @staticmethod
-    # def velocity_verlet(self):
-    #     self.r, self.v, self.a, self.m_enc = Steppers._velocity_verlet_step(
-    #         self.r, self.v, self.a, self.dt, self.m_enc_func, self.a_func
-    #     )
-    #     self.handle_reflections()
-    #     self.t += self.dt
-
     @staticmethod
     def velocity_verlet(self):
         self.r = Steppers._velocity_verlet_numba(self.r, self.v, self.a, self.dt)
@@ -367,6 +350,17 @@ class InitialDensityProfileFunctions:
     def _power_law_rho_func_numba(r, r_max, m_tot, gamma):
         norm_const = (3 + gamma) * m_tot / (4 * np.pi * r_max**(3 + gamma))
         return norm_const * r**gamma
+    
+    @staticmethod
+    def background_plus_power_law_rho_func(self):
+        return InitialDensityProfileFunctions._background_plus_power_law_rho_func_numba(self.r, self.rho_bar, self.m_tot, self.gamma, self.r_max)
+    
+    background_plus_power_law_rho_func.__doc__ = "Background plus power-law density profile function"
+
+    @staticmethod
+    @jit(nopython=True)
+    def _background_plus_power_law_rho_func_numba(r, rho_bar, m_tot, gamma, r_max):
+        return rho_bar + (3 + gamma) * m_tot / (4 * np.pi * r_max**(3 + gamma)) * r**gamma
     
 class ShellThicknessFunction:
     @staticmethod

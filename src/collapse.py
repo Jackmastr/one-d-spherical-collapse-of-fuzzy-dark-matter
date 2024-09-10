@@ -4,14 +4,16 @@ import h5py
 import logging
 from simulation_strategies import *
 
-# Setup logging
+# Setup logging only once at the module level
 logger = logging.getLogger(__name__)
-logger.setLevel(logging.INFO)
-ch = logging.StreamHandler()
-ch.setLevel(logging.DEBUG)
-formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-ch.setFormatter(formatter)
-logger.addHandler(ch)
+if not logger.handlers:
+    logger.setLevel(logging.INFO)
+    ch = logging.StreamHandler()
+    ch.setLevel(logging.DEBUG)
+    formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+    ch.setFormatter(formatter)
+    logger.addHandler(ch)
+    logger.propagate = False  # Add this line
 
 class SphericalCollapse:
     def __init__(self, config=None):
@@ -31,6 +33,7 @@ class SphericalCollapse:
         self.r_max = 1
         self.r_min = 1e-6
         self.m_tot = 1
+        self.rho_bar = 0
         self.dt = 1e-5
         self.dt_min = 1e-9
         self.min_time_scale = None
@@ -144,12 +147,11 @@ class SphericalCollapse:
     def run(self):
         next_save_time = self.save_dt
         next_progress_time = 0.1 * self.t_max
-        progress_interval = 0.1 * self.t_max
         
         while self.t < self.t_max:
             self._update_simulation()
-            self._save_if_necessary(next_save_time)
-            next_save_time = self._update_progress(next_progress_time, progress_interval)
+            next_save_time = self._save_if_necessary(next_save_time)
+            next_progress_time = self._update_progress(next_progress_time)
 
         if self.save_to_file:
             self.save_to_hdf5()
@@ -168,11 +170,11 @@ class SphericalCollapse:
             return self.t + self.save_dt
         return next_save_time
 
-    def _update_progress(self, next_progress_time, progress_interval):
+    def _update_progress(self, next_progress_time):
         if self.t >= next_progress_time:
-            progress = (self.t / self.t_max) * 100
-            print(f"Progress: {progress:.1f}%")
-            return next_progress_time + progress_interval
+            progress = int((self.t / self.t_max) * 100)
+            print(f"Progress: {progress}%")
+            return next_progress_time + 0.1 * self.t_max
         return next_progress_time
 
     def save(self):
