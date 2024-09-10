@@ -34,7 +34,6 @@ class StepperStrategy(SimulationComponent):
 
 class VelocityVerletStepper(StepperStrategy):
     def __call__(self, sim):
-        print(f"VelocityVerletStepper.__call__ called with sim: {sim}")
         sim.r = self._velocity_verlet_numba(sim.r, sim.v, sim.a, sim.dt)
         sim.handle_reflections()
         sim.m_enc = sim.m_enc_func()

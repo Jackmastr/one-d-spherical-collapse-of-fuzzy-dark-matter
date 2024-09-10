@@ -40,7 +40,7 @@ class SphericalCollapse:
         self.save_dt = 1e-4
         self.t_max = 2
         self.t = 0
-        self.stepper = StepperFactory.create("velocity_verlet").__get__(self, SphericalCollapse)
+        self.stepper = StepperFactory.create("velocity_verlet", self)
         self.rho_func = partial(const_rho_func, self)
         self.j_func = partial(gmr_j_func, self)
         self.soft_func = partial(SofteningFunctions.const_soft_func, self)
