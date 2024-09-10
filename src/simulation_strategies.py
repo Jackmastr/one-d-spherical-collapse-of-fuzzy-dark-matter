@@ -1,5 +1,6 @@
 import numpy as np
 from numba import jit
+from abc import ABC, abstractmethod
 
 def const_rho_func(self):
     return self.m_tot / (4/3 * np.pi * self.r_max**3)
@@ -23,28 +24,24 @@ def keep_edges_shell_vol_func(self):
     volumes = 4/3 * np.pi * (self.r**3 - r_inner**3)
     return volumes
 
-class TurnaroundFunctions:
-    @staticmethod
-    def r_is_r_ta_func(self):
-        return self.r
-    
-    @staticmethod
-    def r_ta_analytic(self):
-        return self.r_ta
+class SimulationComponent(ABC):
+    @abstractmethod
+    def __call__(self, sim):
+        pass
 
+class StepperStrategy(SimulationComponent):
+    pass
 
-class Steppers:
-    @staticmethod
-    def velocity_verlet(self):
-        self.r = Steppers._velocity_verlet_numba(self.r, self.v, self.a, self.dt)
-        self.handle_reflections()
-        self.m_enc = self.m_enc_func()
-        a_old = self.a.copy()
-        self.a = self.a_func()
-        self.v = Steppers._velocity_verlet_update_v_numba(self.v, a_old, self.a, self.dt)
-        self.t += self.dt
-    
-    velocity_verlet.__doc__ = "Velocity Verlet: r = r + vdt + (1/2)adt^2, v = (1/2)(a_i + a_{i-1})dt"
+class VelocityVerletStepper(StepperStrategy):
+    def __call__(self, sim):
+        print(f"VelocityVerletStepper.__call__ called with sim: {sim}")
+        sim.r = self._velocity_verlet_numba(sim.r, sim.v, sim.a, sim.dt)
+        sim.handle_reflections()
+        sim.m_enc = sim.m_enc_func()
+        a_old = sim.a.copy()
+        sim.a = sim.a_func()
+        sim.v = self._velocity_verlet_update_v_numba(sim.v, a_old, sim.a, sim.dt)
+        sim.t += sim.dt
 
     @staticmethod
     @jit(nopython=True)
@@ -55,31 +52,28 @@ class Steppers:
     @jit(nopython=True)
     def _velocity_verlet_update_v_numba(v, a_old, a_new, dt):
         return v + 0.5 * (a_old + a_new) * dt
-    
-    @staticmethod
-    def beeman(self):
-        # Beeman's algorithm implementation
-        if self.a_prev is None:
+
+class BeemanStepper(StepperStrategy):
+    def __call__(self, sim):
+        if sim.a_prev is None:
             # Use Taylor expansion for the first step
-            self.r = self.r + self.v * self.dt + 0.5 * self.a * self.dt**2
-            self.handle_reflections()
-            self.m_enc = self.m_enc_func()
-            a_new = self.a_func()
-            v_new = self.v + self.a * self.dt
+            sim.r = sim.r + sim.v * sim.dt + 0.5 * sim.a * sim.dt**2
+            sim.handle_reflections()
+            sim.m_enc = sim.m_enc_func()
+            a_new = sim.a_func()
+            v_new = sim.v + sim.a * sim.dt
         else:
-            self.r = Steppers._beeman_r_numba(self.r, self.v, self.a, self.a_prev, self.dt)
-            self.handle_reflections()
-            self.m_enc = self.m_enc_func()
-            a_new = self.a_func()
-            v_new = Steppers._beeman_v_numba(self.v, self.a, a_new, self.a_prev, self.dt)
+            sim.r = self._beeman_r_numba(sim.r, sim.v, sim.a, sim.a_prev, sim.dt)
+            sim.handle_reflections()
+            sim.m_enc = sim.m_enc_func()
+            a_new = sim.a_func()
+            v_new = self._beeman_v_numba(sim.v, sim.a, a_new, sim.a_prev, sim.dt)
         
         # Update for next step
-        self.a_prev = self.a
-        self.a = a_new
-        self.v = v_new
-        self.t += self.dt
-    
-    beeman.__doc__ = "Beeman: r = r + v * dt + (4 * a - a_prev) * (dt**2) / 6, v = v + (2 * a_new + 5 * a - a_prev) * dt / 6"
+        sim.a_prev = sim.a
+        sim.a = a_new
+        sim.v = v_new
+        sim.t += sim.dt
 
     @staticmethod
     @jit(nopython=True)
@@ -90,6 +84,85 @@ class Steppers:
     @jit(nopython=True)
     def _beeman_v_numba(v, a, a_new, a_prev, dt):
         return v + (2 * a_new + 5 * a - a_prev) * dt / 6
+
+class StepperFactory:
+    @staticmethod
+    def create(stepper_name):
+        if stepper_name == "velocity_verlet":
+            return VelocityVerletStepper()
+        elif stepper_name == "beeman":
+            return BeemanStepper()
+        else:
+            raise ValueError(f"Unknown stepper: {stepper_name}")
+
+
+class TurnaroundFunctions:
+    @staticmethod
+    def r_is_r_ta_func(self):
+        return self.r
+    
+    @staticmethod
+    def r_ta_analytic(self):
+        return self.r_ta
+
+
+# class Steppers:
+#     @staticmethod
+#     def velocity_verlet(self):
+#         self.r = Steppers._velocity_verlet_numba(self.r, self.v, self.a, self.dt)
+#         self.handle_reflections()
+#         self.m_enc = self.m_enc_func()
+#         a_old = self.a.copy()
+#         self.a = self.a_func()
+#         self.v = Steppers._velocity_verlet_update_v_numba(self.v, a_old, self.a, self.dt)
+#         self.t += self.dt
+    
+#     velocity_verlet.__doc__ = "Velocity Verlet: r = r + vdt + (1/2)adt^2, v = (1/2)(a_i + a_{i-1})dt"
+
+#     @staticmethod
+#     @jit(nopython=True)
+#     def _velocity_verlet_numba(r, v, a, dt):
+#         return r + v * dt + 0.5 * a * dt**2
+
+#     @staticmethod
+#     @jit(nopython=True)
+#     def _velocity_verlet_update_v_numba(v, a_old, a_new, dt):
+#         return v + 0.5 * (a_old + a_new) * dt
+    
+#     @staticmethod
+#     def beeman(self):
+#         # Beeman's algorithm implementation
+#         if self.a_prev is None:
+#             # Use Taylor expansion for the first step
+#             self.r = self.r + self.v * self.dt + 0.5 * self.a * self.dt**2
+#             self.handle_reflections()
+#             self.m_enc = self.m_enc_func()
+#             a_new = self.a_func()
+#             v_new = self.v + self.a * self.dt
+#         else:
+#             self.r = Steppers._beeman_r_numba(self.r, self.v, self.a, self.a_prev, self.dt)
+#             self.handle_reflections()
+#             self.m_enc = self.m_enc_func()
+#             a_new = self.a_func()
+#             v_new = Steppers._beeman_v_numba(self.v, self.a, a_new, self.a_prev, self.dt)
+        
+#         # Update for next step
+#         self.a_prev = self.a
+#         self.a = a_new
+#         self.v = v_new
+#         self.t += self.dt
+    
+#     beeman.__doc__ = "Beeman: r = r + v * dt + (4 * a - a_prev) * (dt**2) / 6, v = v + (2 * a_new + 5 * a - a_prev) * dt / 6"
+
+#     @staticmethod
+#     @jit(nopython=True)
+#     def _beeman_r_numba(r, v, a, a_prev, dt):
+#         return r + v * dt + (4 * a - a_prev) * (dt**2) / 6
+
+#     @staticmethod
+#     @jit(nopython=True)
+#     def _beeman_v_numba(v, a, a_new, a_prev, dt):
+#         return v + (2 * a_new + 5 * a - a_prev) * dt / 6
 
 class AccelerationFunctions:
     @staticmethod

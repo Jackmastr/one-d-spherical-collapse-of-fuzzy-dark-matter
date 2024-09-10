@@ -40,7 +40,7 @@ class SphericalCollapse:
         self.save_dt = 1e-4
         self.t_max = 2
         self.t = 0
-        self.stepper = partial(Steppers.velocity_verlet, self)
+        self.stepper = StepperFactory.create("velocity_verlet").__get__(self, SphericalCollapse)
         self.rho_func = partial(const_rho_func, self)
         self.j_func = partial(gmr_j_func, self)
         self.soft_func = partial(SofteningFunctions.const_soft_func, self)
@@ -86,8 +86,13 @@ class SphericalCollapse:
         self.save_to_file = False
 
     def _update_from_config(self, config):
+        factories = {
+            "stepper": StepperFactory,
+        }
         for key, value in config.items():
-            if callable(value) and not isinstance(value, partial):
+            if key in factories:
+                setattr(self, key, factories[key].create(value))
+            elif callable(value) and not isinstance(value, partial):
                 setattr(self, key, partial(value, self))
             else:
                 setattr(self, key, value)
@@ -158,6 +163,7 @@ class SphericalCollapse:
         return self.get_results_dict()
 
     def _update_simulation(self):
+        print(f"_update_simulation called, stepper: {self.stepper}")
         self.stepper()
         self.timescale_func()
         self.timestep_func()
