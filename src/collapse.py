@@ -3,6 +3,7 @@ from functools import partial
 import h5py
 import logging
 import types
+from numba import jit, njit
 from simulation_strategies import *
 
 # Setup logging only once at the module level
@@ -41,13 +42,13 @@ class SphericalCollapse:
         self.save_dt = 1e-4
         self.t_max = 2
         self.t = 0
-        self.stepper = types.MethodType(StepperFactory.create("velocity_verlet"), self)
+        self.stepper_name = "velocity_verlet"
         self.rho_func = types.MethodType(const_rho_func, self)
         self.j_func = types.MethodType(gmr_j_func, self)
         self.soft_func = types.MethodType(SofteningFunctions.const_soft_func, self)
-        self.a_func = types.MethodType(AccelerationFunctions.soft_grav_a_func, self)
+        self.a_func_name = "soft_grav"
         self.m_enc_func = types.MethodType(EnclosedMassFunctions.m_enc_inclusive, self)
-        self.r_ta_func = types.MethodType(r_is_r_ta_func, self)
+        self.r_ta_func_name = "r"
         self.intial_v_func = types.MethodType(hubble_v_func, self)
         self.energy_func = types.MethodType(EnergyFunctions.default_energy_func, self)
         self.shell_vol_func = types.MethodType(keep_edges_shell_vol_func, self)
@@ -87,13 +88,8 @@ class SphericalCollapse:
         self.save_to_file = False
 
     def _update_from_config(self, config):
-        factories = {
-            "stepper": StepperFactory,
-        }
         for key, value in config.items():
-            if key in factories:
-                setattr(self, key, types.MethodType(factories[key].create(value), self))
-            elif callable(value) and not isinstance(value, partial):
+            if callable(value):
                 setattr(self, key, types.MethodType(value, self))
             else:
                 setattr(self, key, value)
@@ -102,7 +98,7 @@ class SphericalCollapse:
         self.r, self.v = self._handle_reflections_numba(self.r, self.v, self.r_min)
 
     @staticmethod
-    @jit(nopython=True)
+    @njit
     def _handle_reflections_numba(r, v, r_min):
         for i in range(len(r)):
             if r[i] < r_min:
@@ -112,28 +108,26 @@ class SphericalCollapse:
 
     def detect_shell_crossings(self):
         pass
-        # self.num_crossing = 0
-        # # Get the current radial positions
-        # current_r = self.r
-        
-        # # If this is the first step, store the current positions and return 0
-        # if self.prev_r is None:
-        #     self.prev_r = current_r.copy()
-        #     return 0
-        
-        # # Get the sorting indices for both previous and current positions
-        # prev_order = np.argsort(self.prev_r)
-        # current_order = np.argsort(current_r)
-        
-        # # Count the number of shells in different order
-        # num_different_order = np.sum(prev_order != current_order)
-        
-        # # Update prev_r for the next step
-        # self.prev_r = current_r.copy()
-        
-        # self.num_crossing = num_different_order
+
+    def _initialize_strategies(self):
+        strategy_mappings = {
+            "stepper": (StepperFactory, self.stepper_name),
+            "r_ta_func": (RTurnaroundFactory, self.r_ta_func_name),
+            "a_func": (AccelerationFactory, self.a_func_name),
+        }
+        for attr_name, (factory, strategy_name) in strategy_mappings.items():
+            try:
+                strategy_instance = factory.create(strategy_name)
+                if strategy_instance is None:
+                    raise ValueError(f"Strategy creation for {attr_name} returned None")
+                setattr(self, attr_name, types.MethodType(strategy_instance, self))
+            except Exception as e:
+                logger.error(f"Error initializing {attr_name}: {str(e)}")
+                raise
 
     def setup(self):
+        # Initialize factories
+        self._initialize_strategies()
         # Initialize radial positions
         self.r = np.linspace(self.r_max/self.N, self.r_max, self.N)
         # Initialize masses for each shell
