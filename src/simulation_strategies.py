@@ -1,27 +1,8 @@
 import numpy as np
-from numba import jit, njit
+from numba import njit
 from abc import ABC, abstractmethod
-
-
-def const_rho_func(self):
-    return self.m_tot / (4/3 * np.pi * self.r_max**3)
-
-
-def const_j_func(self):
-    return self.j_coef
-
-
-def gmr_j_func(self):
-    return self.j_coef * np.sqrt(self.G * self.m_enc * self.r_ta)
-
-
-def r_is_r_ta_func(self):
-    return self.r
-
-
-def hubble_v_func(self):
-    return self.H * self.r
-
+from typing import Callable, List
+from functools import lru_cache
 
 def keep_edges_shell_vol_func(self):
     # Calculate the volumes of spherical shells
@@ -30,7 +11,6 @@ def keep_edges_shell_vol_func(self):
     volumes = 4/3 * np.pi * (self.r**3 - r_inner**3)
     return volumes
 
-
 # Abstract methods for making strategies and factories
 
 class SimulationComponent(ABC):
@@ -38,25 +18,121 @@ class SimulationComponent(ABC):
     def __call__(self, sim):
         pass
 
+
 class StrategyFactory:
     @classmethod
     def create(cls, strategy_name):
         for strategy_cls in cls.strategy_type.__subclasses__():
             if getattr(strategy_cls, 'name', None) == strategy_name:
                 return strategy_cls()
-        raise ValueError(f"Unknown {cls.strategy_type.__name__}: {strategy_name}")
-    
+        raise ValueError(
+            f"Unknown {cls.strategy_type.__name__}: {strategy_name}")
+
+
 def name_strategy(name):
     def decorator(cls):
         cls.name = name
         return cls
     return decorator
 
+
 class StepperStrategy(SimulationComponent):
     pass
 
+
 class StepperFactory(StrategyFactory):
     strategy_type = StepperStrategy
+
+
+class RTurnaroundStrategy(SimulationComponent):
+    pass
+
+
+class RTurnaroundFactory(StrategyFactory):
+    strategy_type = RTurnaroundStrategy
+
+    
+class AccelerationStrategy(SimulationComponent):
+    pass
+
+class AccelerationFactory(StrategyFactory):
+    strategy_type = AccelerationStrategy
+
+class EnclosedMassStrategy(SimulationComponent):
+    pass
+
+class EnclosedMassFactory(StrategyFactory):
+    strategy_type = EnclosedMassStrategy
+
+class InitialVelocityStrategy(SimulationComponent):
+    pass
+
+class InitialVelocityFactory(StrategyFactory):
+    strategy_type = InitialVelocityStrategy
+
+class EnergyStrategy(SimulationComponent):
+    pass
+
+class EnergyFactory(StrategyFactory):
+    strategy_type = EnergyStrategy
+
+class TimeScaleComponent:
+    def __init__(self, name: str, func: Callable):
+        self.name = name
+        self.func = func
+
+class TimeScaleStrategy(SimulationComponent):
+    pass
+
+class TimeScaleFactory(StrategyFactory):
+    strategy_type = TimeScaleStrategy
+
+    @classmethod
+    def create(cls, strategy_name):
+        if '_' in strategy_name:
+            # This is a composite strategy
+            component_names = strategy_name.split('_')
+            return CompositeTimeScaleStrategy.create(*component_names)
+        else:
+            # This is a single strategy or a predefined composite strategy
+            for strategy_cls in cls.strategy_type.__subclasses__():
+                if getattr(strategy_cls, 'name', None) == strategy_name:
+                    return strategy_cls()
+            raise ValueError(f"Unknown TimeScaleStrategy: {strategy_name}")
+
+
+class TimeStepStrategy(SimulationComponent):
+    pass
+
+class TimeStepFactory(StrategyFactory):
+    strategy_type = TimeStepStrategy
+
+class ShellThicknessStrategy(SimulationComponent):
+    pass
+
+class ShellThicknessFactory(StrategyFactory):
+    strategy_type = ShellThicknessStrategy
+
+class DensityStrategy(SimulationComponent):
+    pass
+
+class DensityFactory(StrategyFactory):
+    strategy_type = DensityStrategy
+
+class AngularMomentumStrategy(SimulationComponent):
+    pass
+
+class AngularMomentumFactory(StrategyFactory):
+    strategy_type = AngularMomentumStrategy
+
+class SofteningStrategy(SimulationComponent):
+    pass
+
+class SofteningFactory(StrategyFactory):
+    strategy_type = SofteningStrategy
+
+
+# Implementations of strategies
 
 @name_strategy("velocity_verlet")
 class VelocityVerletStepper(StepperStrategy):
@@ -71,14 +147,15 @@ class VelocityVerletStepper(StepperStrategy):
         sim.t += sim.dt
 
     @staticmethod
-    @njit(nopython=True)
+    @njit
     def _velocity_verlet_numba(r, v, a, dt):
         return r + v * dt + 0.5 * a * dt**2
 
     @staticmethod
-    @njit(nopython=True)
+    @njit
     def _velocity_verlet_update_v_numba(v, a_old, a_new, dt):
         return v + 0.5 * (a_old + a_new) * dt
+
 
 @name_strategy("beeman")
 class BeemanStepper(StepperStrategy):
@@ -106,39 +183,28 @@ class BeemanStepper(StepperStrategy):
         sim.t += sim.dt
 
     @staticmethod
-    @njit(nopython=True)
+    @njit
     def _beeman_r_numba(r, v, a, a_prev, dt):
         return r + v * dt + (4 * a - a_prev) * (dt**2) / 6
 
     @staticmethod
-    @njit(nopython=True)
+    @njit
     def _beeman_v_numba(v, a, a_new, a_prev, dt):
         return v + (2 * a_new + 5 * a - a_prev) * dt / 6
 
 
-class RTurnaroundStrategy(SimulationComponent):
-    pass
 
-class RTurnaroundFactory(StrategyFactory):
-    strategy_type = RTurnaroundStrategy
-
-#TODO: this is a bit of a hack, but it works for now
-@name_strategy("r")
+# TODO: this is a bit of a hack, but it works for now
+@name_strategy("r_is_r_ta")
 class RIsRTurnaroundStrategy(RTurnaroundStrategy):
     def __call__(self, sim):
         return sim.r
 
 
-class AccelerationStrategy(SimulationComponent):
-    pass
-
-class AccelerationFactory(StrategyFactory):
-    strategy_type = AccelerationStrategy
-
 @name_strategy("soft_grav")
 class SoftGravAccelerationStrategy(AccelerationStrategy):
     @staticmethod
-    @njit(nopython=True)
+    @njit
     def _soft_grav_a_func_numba(G, m_enc, j, r, r_soft):
         return -G * m_enc / r_soft**2 + j**2 / r**3
 
@@ -146,10 +212,11 @@ class SoftGravAccelerationStrategy(AccelerationStrategy):
         r_soft = sim.soft_func()
         return self._soft_grav_a_func_numba(sim.G, sim.m_enc, sim.j, sim.r, r_soft)
 
+
 @name_strategy("soft_all")
 class SoftAllAccelerationStrategy(AccelerationStrategy):
     @staticmethod
-    @njit(nopython=True)
+    @njit
     def _soft_all_a_func_numba(G, m_enc, j, r_soft):
         return -G * m_enc / r_soft**2 + j**2 / r_soft**3
 
@@ -158,96 +225,77 @@ class SoftAllAccelerationStrategy(AccelerationStrategy):
         return self._soft_all_a_func_numba(sim.G, sim.m_enc, sim.j, r_soft)
 
 
-class SofteningFunctions:
-    def const_soft_func(self):
-        return SofteningFunctions._const_soft_func_numba(self.r, self.softlen)
-
-    const_soft_func.__doc__ = "r = sqrt(r^2 + softlen^2)"
-
+@name_strategy("const_soft")
+class ConstSoftStrategy(SofteningStrategy):
     @staticmethod
-    @njit(nopython=True)
+    @njit
     def _const_soft_func_numba(r, softlen):
         return np.sqrt(r**2 + softlen**2)
 
-    def r_ta_soft_func(self):
-        return SofteningFunctions._r_ta_soft_func_numba(self.r, self.softlen, self.r_ta)
+    def __call__(self, sim):
+        return self._const_soft_func_numba(sim.r, sim.softlen)
 
-    r_ta_soft_func.__doc__ = "r = sqrt(r^2 + (softlen * r_ta)^2)"
 
+@name_strategy("r_ta_soft")
+class RTASoftStrategy(SofteningStrategy):
     @staticmethod
-    @njit(nopython=True)
+    @njit
     def _r_ta_soft_func_numba(r, softlen, r_ta):
         return np.sqrt(r**2 + (softlen * r_ta)**2)
 
+    def __call__(self, sim):
+        return self._r_ta_soft_func_numba(sim.r, sim.softlen, sim.r_ta)
 
-class EnclosedMassFunctions:
-    def m_enc_inclusive(self):
-        self.thickness_func()
-        return EnclosedMassFunctions._m_enc_inclusive_numba(self.r, self.m)
 
-    m_enc_inclusive.__doc__ = "M_enc,r = sum_{r' <= r} m'"
-
+@name_strategy("inclusive")
+class InclusiveEnclosedMassStrategy(EnclosedMassStrategy):
     @staticmethod
-    @njit(nopython=True)
+    @njit
     def _m_enc_inclusive_numba(r, m):
-        # Sort radii and get sorting indices
         sorted_indices = np.argsort(r)
-        # Sort masses based on radii
         sorted_masses = m[sorted_indices]
-        # Calculate cumulative sum of sorted masses
         cumulative_mass = np.cumsum(sorted_masses)
-        # Create the result array and assign values using advanced indexing
         m_enc = np.empty_like(cumulative_mass)
         m_enc[sorted_indices] = cumulative_mass
         return m_enc
 
-    def m_enc_overlap_inclusive(self):
-        self.thickness_func()
-        return EnclosedMassFunctions._m_enc_overlap_inclusive_numba(self.r, self.m, self.thicknesses)
+    def __call__(self, sim):
+        sim.thickness_func()
+        return self._m_enc_inclusive_numba(sim.r, sim.m)
 
-    m_enc_overlap_inclusive.__doc__ = "Inclusive enclosed mass function with shell overlap"
-
+@name_strategy("overlap_inclusive")
+class OverlapInclusiveEnclosedMassStrategy(EnclosedMassStrategy):
     @staticmethod
-    @njit(nopython=True)
+    @njit
     def _m_enc_overlap_inclusive_numba(r, m, thicknesses):
         n = len(r)
         m_enc = np.zeros_like(m)
-
-        # Pre-compute inner and outer radii
         inner_radii = r - thicknesses
         outer_radii = r
-
-        # Pre-compute volumes
         volumes = outer_radii**3 - inner_radii**3
 
-        # Compute enclosed mass for each shell
         for i in range(n):
-            # Include own mass
             m_enc[i] = m[i]
             for j in range(n):
                 if i == j:
                     continue
                 if r[i] > r[j]:
-                    # No overlap, include full mass
                     m_enc[i] += m[j]
                 elif r[j] - thicknesses[j] < r[i]:
-                    # Partial overlap, calculate enclosed mass fraction
                     overlap_volume = min(
                         r[i]**3 - (r[j] - thicknesses[j])**3, volumes[j])
                     volume_fraction = overlap_volume / volumes[j]
                     m_enc[i] += m[j] * volume_fraction
         return m_enc
 
+    def __call__(self, sim):
+        sim.thickness_func()
+        return self._m_enc_overlap_inclusive_numba(sim.r, sim.m, sim.thicknesses)
 
-class EnergyFunctions:
-    def default_energy_func(self):
-        self.e_k, self.e_g, self.e_r, self.e_tot = EnergyFunctions._default_energy_func_numba(
-            self.G, self.m, self.v, self.m_enc, self.r, self.j)
-
-    default_energy_func.__doc__ = "Default energy calculation function"
-
+@name_strategy("kin_grav_rot")
+class KinGravRotEnergyStrategy(EnergyStrategy):
     @staticmethod
-    @njit(nopython=True)
+    @njit
     def _default_energy_func_numba(G, m, v, m_enc, r, j):
         e_k = 0.5 * m * v**2
         e_g = -G * m * m_enc / r
@@ -255,158 +303,174 @@ class EnergyFunctions:
         e_tot = e_k + e_g + e_r
         return e_k, e_g, e_r, e_tot
 
+    def __call__(self, sim):
+        sim.e_k, sim.e_g, sim.e_r, sim.e_tot = self._default_energy_func_numba(
+            sim.G, sim.m, sim.v, sim.m_enc, sim.r, sim.j)
 
-class TimeScaleFunctions:
-    def dynamical_and_zero_timescale_func(self):
-        self.t_dyn, self.t_zero = TimeScaleFunctions._dynamical_and_zero_timescale_numba(
-            self.G, self.m_enc, self.r, self.v)
-        self.min_time_scale = min(self.t_dyn, self.t_zero)
 
-    dynamical_and_zero_timescale_func.__doc__ = "Dynamical time and time to reach r=0 calculation"
+@njit
+def calculate_t_dyn(G, m_enc, r):
+    return np.min(1/np.sqrt(G * m_enc / r**3))
 
+@njit
+def calculate_t_vel(r, v, r_max, eps=1e-2):
+    return np.min(r_max / (np.abs(v)+eps))
+
+@njit
+def calculate_t_acc(r, a, r_max, eps=1e-2):
+    return np.min(np.sqrt(r_max / (np.abs(a)+eps)))
+
+@njit
+def calculate_t_zero(r, v):
+    t_zero = np.inf
+    for i in range(len(r)):
+        if v[i] < 0:
+            t = r[i] / abs(v[i])
+            if t < t_zero:
+                t_zero = t
+    return t_zero
+
+@njit
+def calculate_t_rmin(r, v, r_min):
+    t_rmin = np.inf
+    for i in range(len(r)):
+        if v[i] < 0:
+            t = (r[i] - r_min) / abs(v[i])
+            if t < t_rmin:
+                t_rmin = t
+    return t_rmin
+
+@njit
+def calculate_rubin_loeb_times(r, v, a, r_max):
+    eps = 1e-2
+    t_vel = np.min(r_max / (np.abs(v)+eps))
+    t_acc = np.min(np.sqrt(r_max / (np.abs(a)+eps)))
+    return t_vel, t_acc
+
+@njit
+def calculate_t_cross(r, v):
+    n = len(r)
+    t_cross = np.inf
+    for i in range(n):
+        for j in range(i+1, n):
+            dr = np.abs(r[i] - r[j])
+            dv = np.abs(v[i] - v[j])
+            if dv > 1e-9:
+                t = dr / dv
+                if t > 0 and t < t_cross:
+                    t_cross = t
+    return t_cross
+
+class TimeScaleStrategy(SimulationComponent):
+    def calculate_min_time_scale(self, *args):
+        return min(args)
+
+class CompositeTimeScaleStrategy(TimeScaleStrategy):
+    def __init__(self, components: List[TimeScaleComponent]):
+        self.components = components
+
+    def __call__(self, sim):
+        time_scales = {}
+        for component in self.components:
+            time_scales[component.name] = component.func(sim)
+        
+        for name, value in time_scales.items():
+            setattr(sim, f"t_{name}", value)
+        
+        sim.min_time_scale = min(time_scales.values())
+
+    @classmethod
+    @lru_cache(maxsize=None)
+    def create(cls, *component_names):
+        component_map = {
+            "dyn": lambda sim: calculate_t_dyn(sim.G, sim.m_enc, sim.r),
+            "zero": lambda sim: calculate_t_zero(sim.r, sim.v),
+            "rmin": lambda sim: calculate_t_rmin(sim.r, sim.v, sim.r_min),
+            "vel": lambda sim: calculate_t_vel(sim.r, sim.v, sim.r_max),
+            "acc": lambda sim: calculate_t_acc(sim.r, sim.a, sim.r_max),
+            "cross": lambda sim: calculate_t_cross(sim.r, sim.v),
+        }
+        
+        components = [
+            TimeScaleComponent(name, component_map[name])
+            for name in component_names if name in component_map
+        ]
+        
+        if not components:
+            raise ValueError("No valid time scale components specified")
+        
+        return cls(components)
+
+@name_strategy("const")
+class ConstTimeStepStrategy(TimeStepStrategy):
+    def __call__(self, sim):
+        pass  # Constant timestep, so we don't need to do anything
+
+@name_strategy("simple_adaptive")
+class SimpleAdaptiveTimeStepStrategy(TimeStepStrategy):
     @staticmethod
-    @njit(nopython=True)
-    def _dynamical_and_zero_timescale_numba(G, m_enc, r, v):
-        t_dyn = np.min(1/np.sqrt(G * m_enc / r**3))
-
-        # Calculate time to reach r=0 for each shell
-        t_zero = np.inf
-        for i in range(len(r)):
-            if v[i] < 0:  # Only consider inward-moving shells
-                t = r[i] / abs(v[i])
-                if t < t_zero:
-                    t_zero = t
-
-        return t_dyn, t_zero
-
-    def dynamical_and_rmin_timescale_func(self):
-        self.t_dyn, self.t_rmin = TimeScaleFunctions._dynamical_and_rmin_timescale_numba(
-            self.G, self.m_enc, self.r, self.v, self.r_min)
-        self.min_time_scale = min(self.t_dyn, self.t_rmin)
-
-    dynamical_and_rmin_timescale_func.__doc__ = "Dynamical time and time to reach r_min calculation"
-
-    @staticmethod
-    @njit(nopython=True)
-    def _dynamical_and_rmin_timescale_numba(G, m_enc, r, v, r_min):
-        t_dyn = np.min(1/np.sqrt(G * m_enc / r**3))
-
-        # Calculate time to reach r_min for each shell
-        t_rmin = np.inf
-        for i in range(len(r)):
-            if v[i] < 0:  # Only consider inward-moving shells
-                t = (r[i] - r_min) / abs(v[i])
-                if t < t_rmin:
-                    t_rmin = t
-
-        return t_dyn, t_rmin
-
-    def rubin_loeb_timescale_func(self):
-        self.t_dyn, self.t_vel, self.t_acc = TimeScaleFunctions._rubin_loeb_timescale_numba(
-            self.G, self.m_enc, self.r, self.v, self.a, self.r_max)
-        self.min_time_scale = min(self.t_dyn, self.t_vel, self.t_acc)
-
-    rubin_loeb_timescale_func.__doc__ = "Rubin-Loeb timescale calculation"
-
-    @staticmethod
-    @njit(nopython=True)
-    def _rubin_loeb_timescale_numba(G, m_enc, r, v, a, r_max):
-        eps = 1e-2
-        t_dyn = np.min(1/np.sqrt(G * m_enc / r**3))
-        t_vel = np.min(r_max / (np.abs(v)+eps))
-        t_acc = np.min(np.sqrt(r_max / (np.abs(a)+eps)))
-        return t_dyn, t_vel, t_acc
-
-    def rubin_loeb_cross_timescale_func(self):
-        self.t_dyn, self.t_vel, self.t_acc, self.t_cross = TimeScaleFunctions._rubin_loeb_cross_timescale_numba(
-            self.G, self.m_enc, self.r, self.v, self.a, self.r_max)
-        self.min_time_scale = min(
-            self.t_dyn, self.t_vel, self.t_acc, self.t_cross)
-
-    rubin_loeb_cross_timescale_func.__doc__ = "Rubin-Loeb timescale calculation with crossing time"
-
-    @staticmethod
-    @njit(nopython=True)
-    def _rubin_loeb_cross_timescale_numba(G, m_enc, r, v, a, r_max):
-        eps = 1e-2
-        t_dyn = np.min(1/np.sqrt(G * m_enc / r**3))
-        t_vel = np.min(r_max / (np.abs(v)+eps))
-        t_acc = np.min(np.sqrt(r_max / (np.abs(a)+eps)))
-
-        # Calculate t_cross: time for any two shells to reach the same position
-        n = len(r)
-        t_cross = np.inf
-        for i in range(n):
-            for j in range(i+1, n):
-                dr = np.abs(r[i] - r[j])
-                dv = np.abs(v[i] - v[j])
-                if dv > 1e-9:
-                    t = dr / dv
-                    if t > 0 and t < t_cross:
-                        t_cross = t
-
-        return t_dyn, t_vel, t_acc, t_cross
-
-
-class TimeStepFunctions:
-    def const_timestep(self):
-        pass
-
-    const_timestep.__doc__ = "Constant timestep function"
-
-    def simple_adaptive_timestep(self):
-        self.dt = max(self.dt_min, TimeStepFunctions._simple_adaptive_timestep_numba(
-            self.safety_factor, self.min_time_scale))
-
-    simple_adaptive_timestep.__doc__ = "Simple adaptive timestep function"
-
-    @staticmethod
-    @njit(nopython=True)
+    @njit
     def _simple_adaptive_timestep_numba(safety_factor, min_time_scale):
         return safety_factor * min_time_scale
 
+    def __call__(self, sim):
+        sim.dt = max(sim.dt_min, self._simple_adaptive_timestep_numba(
+            sim.safety_factor, sim.min_time_scale))
 
-class InitialDensityProfileFunctions:
-    def const_rho_func(self):
-        return InitialDensityProfileFunctions._const_rho_func_numba(self.r_max, self.m_tot)
 
-    const_rho_func.__doc__ = "Constant density profile function"
-
+@name_strategy("const")
+class ConstDensityStrategy(DensityStrategy):
     @staticmethod
-    @njit(nopython=True)
+    @njit
     def _const_rho_func_numba(r_max, m_tot):
         return m_tot / (4/3 * np.pi * r_max**3)
 
-    def power_law_rho_func(self):
-        return InitialDensityProfileFunctions._power_law_rho_func_numba(self.r, self.r_max, self.m_tot, self.gamma)
+    def __call__(self, sim):
+        return self._const_rho_func_numba(sim.r_max, sim.m_tot)
 
-    power_law_rho_func.__doc__ = "Power-law density profile function"
-
+@name_strategy("power_law")
+class PowerLawDensityStrategy(DensityStrategy):
     @staticmethod
-    @njit(nopython=True)
+    @njit
     def _power_law_rho_func_numba(r, r_max, m_tot, gamma):
         norm_const = (3 + gamma) * m_tot / (4 * np.pi * r_max**(3 + gamma))
         return norm_const * r**gamma
 
-    def background_plus_power_law_rho_func(self):
-        return InitialDensityProfileFunctions._background_plus_power_law_rho_func_numba(self.r, self.rho_bar, self.m_tot, self.gamma, self.r_max)
+    def __call__(self, sim):
+        return self._power_law_rho_func_numba(sim.r, sim.r_max, sim.m_tot, sim.gamma)
 
-    background_plus_power_law_rho_func.__doc__ = "Background plus power-law density profile function"
-
+@name_strategy("background_plus_power_law")
+class BackgroundPlusPowerLawDensityStrategy(DensityStrategy):
     @staticmethod
-    @njit(nopython=True)
+    @njit
     def _background_plus_power_law_rho_func_numba(r, rho_bar, m_tot, gamma, r_max):
         return rho_bar + (3 + gamma) * m_tot / (4 * np.pi * r_max**(3 + gamma)) * r**gamma
 
+    def __call__(self, sim):
+        return self._background_plus_power_law_rho_func_numba(sim.r, sim.rho_bar, sim.m_tot, sim.gamma, sim.r_max)
 
-class ShellThicknessFunction:
-    def const_shell_thickness(self):
-        self.thicknesses = ShellThicknessFunction._const_shell_thickness_numba(
-            self.r, self.thickness_coef)
 
-    const_shell_thickness.__doc__ = "Constant shell thickness function"
-
+@name_strategy("const")
+class ConstShellThicknessStrategy(ShellThicknessStrategy):
     @staticmethod
-    @njit(nopython=True)
+    @njit
     def _const_shell_thickness_numba(r, thickness_coef):
         return np.full(len(r), thickness_coef)
+
+    def __call__(self, sim):
+        sim.thicknesses = self._const_shell_thickness_numba(sim.r, sim.thickness_coef)
+
+@name_strategy("const")
+class ConstAngularMomentumStrategy(AngularMomentumStrategy):
+    def __call__(self, sim):
+        return sim.j_coef
+
+@name_strategy("gmr")
+class GMRAngularMomentumStrategy(AngularMomentumStrategy):
+    def __call__(self, sim):
+        return sim.j_coef * np.sqrt(sim.G * sim.m_enc * sim.r_ta)
+    
+@name_strategy("hubble")
+class HubbleInitialVelocityStrategy(InitialVelocityStrategy):
+    def __call__(self, sim):
+        return sim.H * sim.r

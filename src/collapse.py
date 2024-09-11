@@ -25,6 +25,9 @@ class SphericalCollapse:
         # Update if config dictionary is provided
         if config:
             self._update_from_config(config)
+
+        # Capture initial parameters
+        self._initial_params = self._capture_initial_params()
                     
         self.setup()
 
@@ -42,19 +45,19 @@ class SphericalCollapse:
         self.save_dt = 1e-4
         self.t_max = 2
         self.t = 0
-        self.stepper_name = "velocity_verlet"
-        self.rho_func = types.MethodType(const_rho_func, self)
-        self.j_func = types.MethodType(gmr_j_func, self)
-        self.soft_func = types.MethodType(SofteningFunctions.const_soft_func, self)
-        self.a_func_name = "soft_grav"
-        self.m_enc_func = types.MethodType(EnclosedMassFunctions.m_enc_inclusive, self)
-        self.r_ta_func_name = "r"
-        self.intial_v_func = types.MethodType(hubble_v_func, self)
-        self.energy_func = types.MethodType(EnergyFunctions.default_energy_func, self)
+        self.stepper_strategy = "velocity_verlet"
+        self.density_strategy = "const"
+        self.ang_mom_strategy = "gmr"
+        self.soft_func_strategy = "const_soft"
+        self.accel_strategy = "soft_grav"
+        self.m_enc_strategy = "overlap_inclusive"
+        self.r_ta_strategy = "r_is_r_ta"
+        self.intial_v_strategy = "hubble"
+        self.energy_strategy = "kin_grav_rot"
         self.shell_vol_func = types.MethodType(keep_edges_shell_vol_func, self)
-        self.timescale_func = types.MethodType(TimeScaleFunctions.rubin_loeb_cross_timescale_func, self)
-        self.timestep_func = types.MethodType(TimeStepFunctions.const_timestep, self)
-        self.thickness_func = types.MethodType(ShellThicknessFunction.const_shell_thickness, self)
+        self.timescale_strategy = "dyn_vel_acc"
+        self.timestep_strategy = "simple_adaptive"
+        self.thickness_strategy = "const"
         self.prev_r = None
         self.num_crossing = 0
         self.r = None
@@ -94,6 +97,28 @@ class SphericalCollapse:
             else:
                 setattr(self, key, value)
 
+    def _capture_initial_params(self):
+            """
+            Capture all non-None and non-empty parameters before setup.
+            """
+            params = {}
+            for attr, value in self.__dict__.items():
+                if not attr.startswith('_') and value is not None and value != []:
+                    if isinstance(value, (int, float, str, bool, np.number, np.ndarray)):
+                        params[attr] = value
+                    elif isinstance(value, types.MethodType):
+                        # For methods, store the strategy name
+                        params[attr] = value.__func__.__name__
+            return params
+
+    def get_parameters_dict(self):
+        """
+        Return the dictionary of initial simulation parameters.
+        """
+        return self._initial_params.copy()
+
+
+
     def handle_reflections(self):
         self.r, self.v = self._handle_reflections_numba(self.r, self.v, self.r_min)
 
@@ -111,9 +136,18 @@ class SphericalCollapse:
 
     def _initialize_strategies(self):
         strategy_mappings = {
-            "stepper": (StepperFactory, self.stepper_name),
-            "r_ta_func": (RTurnaroundFactory, self.r_ta_func_name),
-            "a_func": (AccelerationFactory, self.a_func_name),
+            "stepper": (StepperFactory, self.stepper_strategy),
+            "r_ta_func": (RTurnaroundFactory, self.r_ta_strategy),
+            "a_func": (AccelerationFactory, self.accel_strategy),
+            "soft_func": (SofteningFactory, self.soft_func_strategy),
+            "m_enc_func": (EnclosedMassFactory, self.m_enc_strategy),
+            "timescale_func": (TimeScaleFactory, self.timescale_strategy),
+            "energy_func": (EnergyFactory, self.energy_strategy),
+            "timestep_func": (TimeStepFactory, self.timestep_strategy),
+            "thickness_func": (ShellThicknessFactory, self.thickness_strategy),
+            "rho_func": (DensityFactory, self.density_strategy),
+            "initial_v_func": (InitialVelocityFactory, self.intial_v_strategy),
+            "j_func": (AngularMomentumFactory, self.ang_mom_strategy),
         }
         for attr_name, (factory, strategy_name) in strategy_mappings.items():
             try:
@@ -137,7 +171,7 @@ class SphericalCollapse:
         # Calculate initial enclosed mass
         self.m_enc = self.m_enc_func()
         # Initialize velocities
-        self.v = self.intial_v_func()
+        self.v = self.initial_v_func()
         # Calculate initial turnaround radius
         self.r_ta = self.r_ta_func()
         # Initialize angular momentum
@@ -214,30 +248,54 @@ class SphericalCollapse:
             for key, value in snapshot.items():
                 results[key].append(value)
         return {key: np.array(value) for key, value in results.items()}  
+    
+    def _capture_initial_params(self):
+        """
+        Capture all non-None and non-empty parameters before setup.
+        """
+        params = {}
+        for attr, value in self.__dict__.items():
+            if not attr.startswith('_') and value is not None and value != []:
+                if isinstance(value, (int, float, str, bool, np.number, np.ndarray)):
+                    params[attr] = value
+                elif isinstance(value, types.MethodType):
+                    # For methods, store the strategy name
+                    params[attr] = value.__func__.__name__
+        return params
+
+    def get_parameters_dict(self):
+        """
+        Return the dictionary of initial simulation parameters.
+        """
+        return self._initial_params.copy()
 
     def save_to_hdf5(self, filename='simulation_data.h5'):
         """
-        Save all snapshots to an HDF5 file, organized by parameter.
+        Save simulation data and parameters to an HDF5 file.
         """
         with h5py.File(filename, 'w') as hf:
-            # Create datasets for each parameter
-            num_snapshots = len(self.snapshots)
-            num_shells = len(self.snapshots[0]['r'])
-            
-            # Create datasets for all parameters in self.snapshots
-            datasets = {}
-            for key, value in self.snapshots[0].items():
-                if np.isscalar(value):
-                    datasets[key] = hf.create_dataset(key, (num_snapshots,), dtype='float64')
+            # Save parameters as attributes in the root group
+            for key, value in self.get_parameters_dict().items():
+                if isinstance(value, (int, float, str, bool, np.number)):
+                    hf.attrs[key] = value
                 else:
-                    datasets[key] = hf.create_dataset(key, (num_snapshots, len(value)), dtype='float64')
+                    # For more complex types, store as string representation
+                    hf.attrs[key] = str(value)
 
-            # Fill datasets
-            for i, snapshot in enumerate(self.snapshots):
-                for key, value in snapshot.items():
-                    datasets[key][i] = value
+            # Create a group for snapshots
+            snapshots_group = hf.create_group('snapshots')
 
-        logger.info(f"Saved {num_snapshots} snapshots to {filename}")
+            # Save snapshot data
+            for key in self.snapshots[0].keys():
+                if np.isscalar(self.snapshots[0][key]):
+                    dataset = snapshots_group.create_dataset(key, (len(self.snapshots),), dtype='float64')
+                else:
+                    dataset = snapshots_group.create_dataset(key, (len(self.snapshots), len(self.snapshots[0][key])), dtype='float64')
+                
+                for i, snapshot in enumerate(self.snapshots):
+                    dataset[i] = snapshot[key]
+
+        print(f"Saved simulation data and parameters to {filename}")
 
 
     def __str__(self):
