@@ -2,6 +2,7 @@ import numpy as np
 from functools import partial
 import h5py
 import logging
+import types
 from simulation_strategies import *
 
 # Setup logging only once at the module level
@@ -40,19 +41,19 @@ class SphericalCollapse:
         self.save_dt = 1e-4
         self.t_max = 2
         self.t = 0
-        self.stepper = StepperFactory.create("velocity_verlet", self)
-        self.rho_func = partial(const_rho_func, self)
-        self.j_func = partial(gmr_j_func, self)
-        self.soft_func = partial(SofteningFunctions.const_soft_func, self)
-        self.a_func = partial(AccelerationFunctions.soft_grav_a_func, self)
-        self.m_enc_func = partial(EnclosedMassFunctions.m_enc_inclusive, self)
-        self.r_ta_func = partial(r_is_r_ta_func, self)
-        self.intial_v_func = partial(hubble_v_func, self)
-        self.energy_func = partial(EnergyFunctions.default_energy_func, self)
-        self.shell_vol_func = partial(keep_edges_shell_vol_func, self)
-        self.timescale_func = partial(TimeScaleFunctions.rubin_loeb_cross_timescale_func, self)
-        self.timestep_func = partial(TimeStepFunctions.const_timestep, self)
-        self.thickness_func = partial(ShellThicknessFunction.const_shell_thickness, self)
+        self.stepper = types.MethodType(StepperFactory.create("velocity_verlet"), self)
+        self.rho_func = types.MethodType(const_rho_func, self)
+        self.j_func = types.MethodType(gmr_j_func, self)
+        self.soft_func = types.MethodType(SofteningFunctions.const_soft_func, self)
+        self.a_func = types.MethodType(AccelerationFunctions.soft_grav_a_func, self)
+        self.m_enc_func = types.MethodType(EnclosedMassFunctions.m_enc_inclusive, self)
+        self.r_ta_func = types.MethodType(r_is_r_ta_func, self)
+        self.intial_v_func = types.MethodType(hubble_v_func, self)
+        self.energy_func = types.MethodType(EnergyFunctions.default_energy_func, self)
+        self.shell_vol_func = types.MethodType(keep_edges_shell_vol_func, self)
+        self.timescale_func = types.MethodType(TimeScaleFunctions.rubin_loeb_cross_timescale_func, self)
+        self.timestep_func = types.MethodType(TimeStepFunctions.const_timestep, self)
+        self.thickness_func = types.MethodType(ShellThicknessFunction.const_shell_thickness, self)
         self.prev_r = None
         self.num_crossing = 0
         self.r = None
@@ -91,38 +92,46 @@ class SphericalCollapse:
         }
         for key, value in config.items():
             if key in factories:
-                setattr(self, key, factories[key].create(value))
+                setattr(self, key, types.MethodType(factories[key].create(value), self))
             elif callable(value) and not isinstance(value, partial):
-                setattr(self, key, partial(value, self))
+                setattr(self, key, types.MethodType(value, self))
             else:
                 setattr(self, key, value)
 
     def handle_reflections(self):
-        inside_sphere = self.r < self.r_min
-        self.r[inside_sphere] = 2 * self.r_min - self.r[inside_sphere]
-        self.v[inside_sphere] = -self.v[inside_sphere]
+        self.r, self.v = self._handle_reflections_numba(self.r, self.v, self.r_min)
+
+    @staticmethod
+    @jit(nopython=True)
+    def _handle_reflections_numba(r, v, r_min):
+        for i in range(len(r)):
+            if r[i] < r_min:
+                r[i] = 2 * r_min - r[i]
+                v[i] = -v[i]
+        return r, v
 
     def detect_shell_crossings(self):
-        self.num_crossing = 0
-        # Get the current radial positions
-        current_r = self.r
+        pass
+        # self.num_crossing = 0
+        # # Get the current radial positions
+        # current_r = self.r
         
-        # If this is the first step, store the current positions and return 0
-        if self.prev_r is None:
-            self.prev_r = current_r.copy()
-            return 0
+        # # If this is the first step, store the current positions and return 0
+        # if self.prev_r is None:
+        #     self.prev_r = current_r.copy()
+        #     return 0
         
-        # Get the sorting indices for both previous and current positions
-        prev_order = np.argsort(self.prev_r)
-        current_order = np.argsort(current_r)
+        # # Get the sorting indices for both previous and current positions
+        # prev_order = np.argsort(self.prev_r)
+        # current_order = np.argsort(current_r)
         
-        # Count the number of shells in different order
-        num_different_order = np.sum(prev_order != current_order)
+        # # Count the number of shells in different order
+        # num_different_order = np.sum(prev_order != current_order)
         
-        # Update prev_r for the next step
-        self.prev_r = current_r.copy()
+        # # Update prev_r for the next step
+        # self.prev_r = current_r.copy()
         
-        self.num_crossing = num_different_order
+        # self.num_crossing = num_different_order
 
     def setup(self):
         # Initialize radial positions
@@ -163,7 +172,6 @@ class SphericalCollapse:
         return self.get_results_dict()
 
     def _update_simulation(self):
-        print(f"_update_simulation called, stepper: {self.stepper}")
         self.stepper()
         self.timescale_func()
         self.timestep_func()
