@@ -5,7 +5,7 @@ import logging
 import types
 from numba import jit, njit
 from simulation_strategies import *
-
+from utils import *
 # Setup logging only once at the module level
 logger = logging.getLogger(__name__)
 if not logger.handlers:
@@ -88,7 +88,7 @@ class SphericalCollapse:
         self.safety_factor = 1e-3
         self.shell_thickness = None
         self.snapshots = []
-        self.save_to_file = False
+        self.save_filename = None
 
     def _update_from_config(self, config):
         for key, value in config.items():
@@ -195,8 +195,8 @@ class SphericalCollapse:
             next_save_time = self._save_if_necessary(next_save_time)
             next_progress_time = self._update_progress(next_progress_time)
 
-        if self.save_to_file:
-            self.save_to_hdf5()
+        if self.save_filename:
+            save_to_hdf5(self, self.save_filename)
         return self.get_results_dict()
 
     def _update_simulation(self):
@@ -268,34 +268,6 @@ class SphericalCollapse:
         Return the dictionary of initial simulation parameters.
         """
         return self._initial_params.copy()
-
-    def save_to_hdf5(self, filename='simulation_data.h5'):
-        """
-        Save simulation data and parameters to an HDF5 file.
-        """
-        with h5py.File(filename, 'w') as hf:
-            # Save parameters as attributes in the root group
-            for key, value in self.get_parameters_dict().items():
-                if isinstance(value, (int, float, str, bool, np.number)):
-                    hf.attrs[key] = value
-                else:
-                    # For more complex types, store as string representation
-                    hf.attrs[key] = str(value)
-
-            # Create a group for snapshots
-            snapshots_group = hf.create_group('snapshots')
-
-            # Save snapshot data
-            for key in self.snapshots[0].keys():
-                if np.isscalar(self.snapshots[0][key]):
-                    dataset = snapshots_group.create_dataset(key, (len(self.snapshots),), dtype='float64')
-                else:
-                    dataset = snapshots_group.create_dataset(key, (len(self.snapshots), len(self.snapshots[0][key])), dtype='float64')
-                
-                for i, snapshot in enumerate(self.snapshots):
-                    dataset[i] = snapshot[key]
-
-        print(f"Saved simulation data and parameters to {filename}")
 
 
     def __str__(self):
