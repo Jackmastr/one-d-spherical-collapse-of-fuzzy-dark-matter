@@ -94,11 +94,13 @@ class TimeScaleFactory(StrategyFactory):
             component_names = strategy_name.split('_')
             return CompositeTimeScaleStrategy.create(*component_names)
         else:
-            # This is a single strategy or a predefined composite strategy
-            for strategy_cls in cls.strategy_type.__subclasses__():
-                if getattr(strategy_cls, 'name', None) == strategy_name:
-                    return strategy_cls()
-            raise ValueError(f"Unknown TimeScaleStrategy: {strategy_name}")
+            return CompositeTimeScaleStrategy.create(strategy_name)
+        # else:
+        #     # This is a single strategy or a predefined composite strategy
+        #     for strategy_cls in cls.strategy_type.__subclasses__():
+        #         if getattr(strategy_cls, 'name', None) == strategy_name:
+        #             return strategy_cls()
+        #     raise ValueError(f"Unknown TimeScaleStrategy: {strategy_name}")
 
 
 class TimeStepStrategy(SimulationComponent):
@@ -133,6 +135,29 @@ class SofteningFactory(StrategyFactory):
 
 
 # Implementations of strategies
+
+@name_strategy("velocity_verlet_alt_v_reflection")
+class VelocityVerletAltVReflectionStepper(StepperStrategy):
+    def __call__(self, sim):
+        sim.r = self._velocity_verlet_numba(sim.r, sim.v, sim.a, sim.dt)
+        sim.handle_reflections()
+        sim.m_enc = sim.m_enc_func()
+        a_old = sim.a.copy()
+        sim.a = sim.a_func()
+        sim.v = self._velocity_verlet_update_v_numba(
+            sim.v, a_old, sim.a, sim.dt, sim.which_reflected)
+        sim.t += sim.dt
+
+    @staticmethod
+    @njit
+    def _velocity_verlet_numba(r, v, a, dt):
+        return r + v * dt + 0.5 * a * dt**2
+
+    @staticmethod
+    @njit
+    def _velocity_verlet_update_v_numba(v, a_old, a_new, dt, which_reflected):
+        return np.where(which_reflected, v, v + 0.5 * (a_old + a_new) * dt)
+
 
 @name_strategy("velocity_verlet")
 class VelocityVerletStepper(StepperStrategy):
@@ -245,29 +270,53 @@ class RTASoftStrategy(SofteningStrategy):
 
     def __call__(self, sim):
         return self._r_ta_soft_func_numba(sim.r, sim.softlen, sim.r_ta)
+    
+@name_strategy("const_inclusive")
+class ConstInclusiveEnclosedMassStrategy(EnclosedMassStrategy):
+    @staticmethod
+    @njit
+    def _m_enc_const_inclusive_numba(r, m, point_mass):
+        m_enc = np.cumsum(m) + point_mass
+        return m_enc
 
+    def __call__(self, sim):
+        if sim.m_enc is not None:
+            return sim.m_enc
+        return self._m_enc_const_inclusive_numba(sim.r, sim.m, sim.point_mass)
+    
+@name_strategy("const_exclusive")
+class ConstExclusiveEnclosedMassStrategy(EnclosedMassStrategy):
+    @staticmethod
+    @njit
+    def _m_enc_const_exclusive_numba(r, m, point_mass):
+        m_enc = np.cumsum(m) + point_mass - m
+        return m_enc
+
+    def __call__(self, sim):
+        if sim.m_enc is not None:
+            return sim.m_enc
+        return self._m_enc_const_exclusive_numba(sim.r, sim.m, sim.point_mass)
 
 @name_strategy("inclusive")
 class InclusiveEnclosedMassStrategy(EnclosedMassStrategy):
     @staticmethod
     @njit
-    def _m_enc_inclusive_numba(r, m):
+    def _m_enc_inclusive_numba(r, m, point_mass):
         sorted_indices = np.argsort(r)
         sorted_masses = m[sorted_indices]
         cumulative_mass = np.cumsum(sorted_masses)
         m_enc = np.empty_like(cumulative_mass)
-        m_enc[sorted_indices] = cumulative_mass
+        m_enc[sorted_indices] = cumulative_mass + point_mass
         return m_enc
 
     def __call__(self, sim):
-        sim.thickness_func()
-        return self._m_enc_inclusive_numba(sim.r, sim.m)
+        return self._m_enc_inclusive_numba(sim.r, sim.m, sim.point_mass)
 
 @name_strategy("overlap_inclusive")
 class OverlapInclusiveEnclosedMassStrategy(EnclosedMassStrategy):
     @staticmethod
     @njit
-    def _m_enc_overlap_inclusive_numba(r, m, thicknesses):
+    def _m_enc_overlap_inclusive_numba(r, m, thicknesses, point_mass):
         n = len(r)
         m_enc = np.zeros_like(m)
         inner_radii = r - thicknesses
@@ -275,7 +324,7 @@ class OverlapInclusiveEnclosedMassStrategy(EnclosedMassStrategy):
         volumes = outer_radii**3 - inner_radii**3
 
         for i in range(n):
-            m_enc[i] = m[i]
+            m_enc[i] = m[i] + point_mass
             for j in range(n):
                 if i == j:
                     continue
@@ -290,7 +339,7 @@ class OverlapInclusiveEnclosedMassStrategy(EnclosedMassStrategy):
 
     def __call__(self, sim):
         sim.thickness_func()
-        return self._m_enc_overlap_inclusive_numba(sim.r, sim.m, sim.thicknesses)
+        return self._m_enc_overlap_inclusive_numba(sim.r, sim.m, sim.thicknesses, sim.point_mass)
 
 @name_strategy("kin_grav_rot")
 class KinGravRotEnergyStrategy(EnergyStrategy):
@@ -341,11 +390,14 @@ def calculate_t_rmin(r, v, r_min):
     return t_rmin
 
 @njit
-def calculate_rubin_loeb_times(r, v, a, r_max):
-    eps = 1e-2
-    t_vel = np.min(r_max / (np.abs(v)+eps))
-    t_acc = np.min(np.sqrt(r_max / (np.abs(a)+eps)))
-    return t_vel, t_acc
+def calculate_t_rmina(r, v, a, r_min):
+    t_rmina = np.inf
+    for i in range(len(r)):
+        if v[i] < 0 and a[i] < 0:
+            t = np.sqrt((r[i] - r_min) / np.abs(a[i]))
+            if t < t_rmina:
+                t_rmina = t
+    return t_rmina
 
 @njit
 def calculate_t_cross(r, v):
@@ -386,6 +438,7 @@ class CompositeTimeScaleStrategy(TimeScaleStrategy):
             "dyn": lambda sim: calculate_t_dyn(sim.G, sim.m_enc, sim.r),
             "zero": lambda sim: calculate_t_zero(sim.r, sim.v),
             "rmin": lambda sim: calculate_t_rmin(sim.r, sim.v, sim.r_min),
+            "rmina": lambda sim: calculate_t_rmina(sim.r, sim.v, sim.a, sim.r_min),
             "vel": lambda sim: calculate_t_vel(sim.r, sim.v, sim.r_max),
             "acc": lambda sim: calculate_t_acc(sim.r, sim.a, sim.r_max),
             "cross": lambda sim: calculate_t_cross(sim.r, sim.v),

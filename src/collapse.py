@@ -45,6 +45,7 @@ class SphericalCollapse:
         self.save_dt = 1e-4
         self.t_max = 2
         self.t = 0
+        self.point_mass = 0
         self.stepper_strategy = "velocity_verlet"
         self.density_strategy = "const"
         self.ang_mom_strategy = "gmr"
@@ -55,10 +56,12 @@ class SphericalCollapse:
         self.intial_v_strategy = "hubble"
         self.energy_strategy = "kin_grav_rot"
         self.shell_vol_func = types.MethodType(keep_edges_shell_vol_func, self)
-        self.timescale_strategy = "dyn_vel_acc"
+        self.timescale_strategy = "dyn_rmin"
         self.timestep_strategy = "simple_adaptive"
         self.thickness_strategy = "const"
         self.prev_r = None
+        self.which_reflected = None
+        self.refletion_events = []
         self.num_crossing = 0
         self.r = None
         self.v = None
@@ -83,6 +86,7 @@ class SphericalCollapse:
         self.t_cross = None
         self.t_zero = None
         self.t_rmin = None
+        self.t_rmina = None
         self.gamma = 0
         self.H = 0
         self.safety_factor = 1e-3
@@ -120,16 +124,18 @@ class SphericalCollapse:
 
 
     def handle_reflections(self):
-        self.r, self.v = self._handle_reflections_numba(self.r, self.v, self.r_min)
+        self.r, self.v, self.which_reflected = self._handle_reflections_numba(self.r, self.v, self.r_min)
 
     @staticmethod
     @njit
     def _handle_reflections_numba(r, v, r_min):
+        which_reflected = np.zeros_like(r, dtype=np.bool_)
         for i in range(len(r)):
             if r[i] < r_min:
                 r[i] = 2 * r_min - r[i]
                 v[i] = -v[i]
-        return r, v
+                which_reflected[i] = True
+        return r, v, which_reflected
 
     def detect_shell_crossings(self):
         pass
@@ -164,6 +170,7 @@ class SphericalCollapse:
         self._initialize_strategies()
         # Initialize radial positions
         self.r = np.linspace(self.r_max/self.N, self.r_max, self.N)
+        self.which_reflected = np.zeros_like(self.r, dtype=np.int32)
         # Initialize masses for each shell
         shell_volumes = self.shell_vol_func()
         densities = self.rho_func()
@@ -238,6 +245,7 @@ class SphericalCollapse:
             't_cross': self.t_cross,
             't_zero': self.t_zero,
             't_rmin': self.t_rmin,
+            't_rmina': self.t_rmina,
             'num_crossing': self.num_crossing,
         }
         self.snapshots.append(data)
