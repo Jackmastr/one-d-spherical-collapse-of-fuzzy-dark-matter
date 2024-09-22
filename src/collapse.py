@@ -96,6 +96,8 @@ class SphericalCollapse:
 
     def _update_from_config(self, config):
         for key, value in config.items():
+            if key not in self.__dict__:
+                raise AttributeError(f"Attribute {key} does not exist in the object.")
             if callable(value):
                 setattr(self, key, types.MethodType(value, self))
             else:
