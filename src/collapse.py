@@ -216,7 +216,6 @@ class SphericalCollapse:
 
     def _save_if_necessary(self, next_save_time):
         if self.t >= next_save_time:
-            self.energy_func()
             self.save()
             return self.t + self.save_dt
         return next_save_time

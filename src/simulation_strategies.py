@@ -92,16 +92,24 @@ class TimeScaleFactory(StrategyFactory):
         if '_' in strategy_name:
             # This is a composite strategy
             component_names = strategy_name.split('_')
-            return CompositeTimeScaleStrategy.create(*component_names)
+            return CompositeSaveStrategy.create(*component_names)
         else:
-            return CompositeTimeScaleStrategy.create(strategy_name)
-        # else:
-        #     # This is a single strategy or a predefined composite strategy
-        #     for strategy_cls in cls.strategy_type.__subclasses__():
-        #         if getattr(strategy_cls, 'name', None) == strategy_name:
-        #             return strategy_cls()
-        #     raise ValueError(f"Unknown TimeScaleStrategy: {strategy_name}")
+            return CompositeSaveStrategy.create(strategy_name)
 
+class SaveStrategy(SimulationComponent):
+    pass
+
+class SaveFactory(StrategyFactory):
+    strategy_type = SaveStrategy
+
+    @classmethod
+    def create(cls, strategy_name):
+        if '_' in strategy_name:
+            # This is a composite strategy
+            component_names = strategy_name.split('_')
+            return CompositeSaveStrategy.create(*component_names)
+        else:
+            return CompositeSaveStrategy.create(strategy_name)
 
 class TimeStepStrategy(SimulationComponent):
     pass
