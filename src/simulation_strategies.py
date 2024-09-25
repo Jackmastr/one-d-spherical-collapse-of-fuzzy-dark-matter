@@ -82,7 +82,8 @@ class TimeScaleComponent:
         self.func = func
 
 class TimeScaleStrategy(SimulationComponent):
-    pass
+    def calculate_min_time_scale(self, *args):
+        return min(args)
 
 class TimeScaleFactory(StrategyFactory):
     strategy_type = TimeScaleStrategy
@@ -92,9 +93,15 @@ class TimeScaleFactory(StrategyFactory):
         if '_' in strategy_name:
             # This is a composite strategy
             component_names = strategy_name.split('_')
-            return CompositeSaveStrategy.create(*component_names)
+            return CompositeTimeScaleStrategy.create(*component_names)
         else:
-            return CompositeSaveStrategy.create(strategy_name)
+            return CompositeTimeScaleStrategy.create(strategy_name)
+
+
+class SaveComponent:
+    def __init__(self, name: str, func: Callable):
+        self.name = name
+        self.func = func
 
 class SaveStrategy(SimulationComponent):
     pass
@@ -193,7 +200,7 @@ class VelocityVerletStepper(StepperStrategy):
 @name_strategy("beeman")
 class BeemanStepper(StepperStrategy):
     def __call__(self, sim):
-        if sim.a_prev is None:
+        if sim.prev_a is None:
             # Use Taylor expansion for the first step
             sim.r = sim.r + sim.v * sim.dt + 0.5 * sim.a * sim.dt**2
             sim.handle_reflections()
@@ -202,28 +209,29 @@ class BeemanStepper(StepperStrategy):
             v_new = sim.v + sim.a * sim.dt
         else:
             sim.r = self._beeman_r_numba(
-                sim.r, sim.v, sim.a, sim.a_prev, sim.dt)
+                sim.r, sim.v, sim.a, sim.prev_a, sim.dt)
             sim.handle_reflections()
             sim.m_enc = sim.m_enc_func()
             a_new = sim.a_func()
             v_new = self._beeman_v_numba(
-                sim.v, sim.a, a_new, sim.a_prev, sim.dt)
+                sim.v, sim.a, a_new, sim.prev_a, sim.dt)
 
         # Update for next step
-        sim.a_prev = sim.a
+        sim.prev_a = sim.a.copy()
+        sim.prev_v = sim.v.copy()
         sim.a = a_new
         sim.v = v_new
         sim.t += sim.dt
 
     @staticmethod
     @njit
-    def _beeman_r_numba(r, v, a, a_prev, dt):
-        return r + v * dt + (4 * a - a_prev) * (dt**2) / 6
+    def _beeman_r_numba(r, v, a, prev_a, dt):
+        return r + v * dt + (4 * a - prev_a) * (dt**2) / 6
 
     @staticmethod
     @njit
-    def _beeman_v_numba(v, a, a_new, a_prev, dt):
-        return v + (2 * a_new + 5 * a - a_prev) * dt / 6
+    def _beeman_v_numba(v, a, a_new, prev_a, dt):
+        return v + (2 * a_new + 5 * a - prev_a) * dt / 6
 
 
 
@@ -363,6 +371,38 @@ class KinGravRotEnergyStrategy(EnergyStrategy):
     def __call__(self, sim):
         sim.e_k, sim.e_g, sim.e_r, sim.e_tot = self._default_energy_func_numba(
             sim.G, sim.m, sim.v, sim.m_enc, sim.r, sim.j)
+        
+@name_strategy("kin_softgrav_rot")
+class KinSoftGravRotEnergyStrategy(EnergyStrategy):
+    @staticmethod
+    @njit
+    def _soft_energy_func_numba(G, m, v, m_enc, r, j, r_soft):
+        e_k = 0.5 * m * v**2
+        e_g = -G * m * m_enc / r_soft
+        e_r = 0.5 * m * j**2 / r**2
+        e_tot = e_k + e_g + e_r
+        return e_k, e_g, e_r, e_tot
+
+    def __call__(self, sim):
+        r_soft = sim.soft_func()
+        sim.e_k, sim.e_g, sim.e_r, sim.e_tot = self._soft_energy_func_numba(
+            sim.G, sim.m, sim.v, sim.m_enc, sim.r, sim.j, r_soft)
+        
+@name_strategy("kin_softgrav_softrot")
+class KinSoftGravRotEnergyStrategy(EnergyStrategy):
+    @staticmethod
+    @njit
+    def _soft_energy_func_numba(G, m, v, m_enc, r, j, r_soft):
+        e_k = 0.5 * m * v**2
+        e_g = -G * m * m_enc / r_soft
+        e_r = 0.5 * m * j**2 / r_soft**2
+        e_tot = e_k + e_g + e_r
+        return e_k, e_g, e_r, e_tot
+
+    def __call__(self, sim):
+        r_soft = sim.soft_func()
+        sim.e_k, sim.e_g, sim.e_r, sim.e_tot = self._soft_energy_func_numba(
+            sim.G, sim.m, sim.v, sim.m_enc, sim.r, sim.j, r_soft)
 
 
 @njit
@@ -421,10 +461,6 @@ def calculate_t_cross(r, v):
                     t_cross = t
     return t_cross
 
-class TimeScaleStrategy(SimulationComponent):
-    def calculate_min_time_scale(self, *args):
-        return min(args)
-
 class CompositeTimeScaleStrategy(TimeScaleStrategy):
     def __init__(self, components: List[TimeScaleComponent]):
         self.components = components
@@ -459,6 +495,41 @@ class CompositeTimeScaleStrategy(TimeScaleStrategy):
         
         if not components:
             raise ValueError("No valid time scale components specified")
+        
+        return cls(components)
+    
+def save_default():
+    return False
+
+@njit
+def save_on_direction_change(v, prev_v):
+    if prev_v is None:
+        return False
+    return np.any(v * prev_v < 0)
+
+class CompositeSaveStrategy(SaveStrategy):
+    def __init__(self, components: List[SaveComponent]):
+        self.components = components
+
+    def __call__(self, sim):
+        # Return True if any of the save conditions are met
+        return any(component.func(sim) for component in self.components)
+
+    @classmethod
+    @lru_cache(maxsize=None)
+    def create(cls, *component_names):
+        component_map = {
+            "default": lambda sim: save_default(),
+            "vflip": lambda sim: save_on_direction_change(sim.v, sim.prev_v),
+        }
+        
+        components = [
+            SaveComponent(name, component_map[name])
+            for name in component_names if name in component_map
+        ]
+        
+        if not components:
+            raise ValueError("No valid save components specified")
         
         return cls(components)
 

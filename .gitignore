@@ -4,6 +4,7 @@ stats
 *.h5
 logs/
 configs/
+test_outputs/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

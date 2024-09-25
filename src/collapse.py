@@ -43,6 +43,7 @@ class SphericalCollapse:
         self.dt_min = 1e-9
         self.min_time_scale = None
         self.save_dt = 1e-4
+        self.next_save_time = None
         self.t_max = 2
         self.t = 0
         self.point_mass = 0
@@ -59,6 +60,7 @@ class SphericalCollapse:
         self.timescale_strategy = "dyn_rmin"
         self.timestep_strategy = "simple_adaptive"
         self.thickness_strategy = "const"
+        self.save_strategy = "default"
         self.prev_r = None
         self.which_reflected = None
         self.refletion_events = []
@@ -66,7 +68,8 @@ class SphericalCollapse:
         self.r = None
         self.v = None
         self.a = None
-        self.a_prev = None
+        self.prev_a = None
+        self.prev_v = None
         self.m = None
         self.m_enc = None
         self.j = None
@@ -156,6 +159,7 @@ class SphericalCollapse:
             "rho_func": (DensityFactory, self.density_strategy),
             "initial_v_func": (InitialVelocityFactory, self.intial_v_strategy),
             "j_func": (AngularMomentumFactory, self.ang_mom_strategy),
+            "save_func": (SaveFactory, self.save_strategy),
         }
         for attr_name, (factory, strategy_name) in strategy_mappings.items():
             try:
@@ -196,12 +200,12 @@ class SphericalCollapse:
         logger.info("Simulation setup complete")
 
     def run(self):
-        next_save_time = self.save_dt
+        self.next_save_time = self.save_dt
         next_progress_time = 0.1 * self.t_max
         
         while self.t < self.t_max:
             self._update_simulation()
-            next_save_time = self._save_if_necessary(next_save_time)
+            self._save_if_necessary()
             next_progress_time = self._update_progress(next_progress_time)
 
         if self.save_filename:
@@ -214,11 +218,21 @@ class SphericalCollapse:
         self.timestep_func()
         self.detect_shell_crossings()
 
-    def _save_if_necessary(self, next_save_time):
-        if self.t >= next_save_time:
+    def _save_if_necessary(self):
+        should_save = False
+         # Check if it's time for a periodic save
+        if self.t >= self.next_save_time:
+            should_save = True
+            self.next_save_time += self.save_dt
+
+        # Check if any save condition is met
+        if self.save_func():
+            should_save = True
+
+        # Perform save if any condition is met
+        if should_save:
+            self.energy_func()
             self.save()
-            return self.t + self.save_dt
-        return next_save_time
 
     def _update_progress(self, next_progress_time):
         if self.t >= next_progress_time:
@@ -264,7 +278,7 @@ class SphericalCollapse:
         """
         params = {}
         for attr, value in self.__dict__.items():
-            if not attr.startswith('_') and value is not None and value != []:
+            if not attr.startswith('_') and value is not None and not (isinstance(value, list) and len(value) == 0):
                 if isinstance(value, (int, float, str, bool, np.number, np.ndarray)):
                     params[attr] = value
                 elif isinstance(value, types.MethodType):
