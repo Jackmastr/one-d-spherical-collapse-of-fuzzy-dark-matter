@@ -6,6 +6,7 @@ import types
 from numba import jit, njit
 from simulation_strategies import *
 from utils import *
+from collections import deque, defaultdict
 # Setup logging only once at the module level
 logger = logging.getLogger(__name__)
 if not logger.handlers:
@@ -43,7 +44,7 @@ class SphericalCollapse:
         self.dt_min = 1e-9
         self.min_time_scale = None
         self.save_dt = 1e-4
-        self.next_save_time = None
+        self.next_save_time = 0
         self.t_max = 2
         self.t = 0
         self.point_mass = 0
@@ -90,12 +91,16 @@ class SphericalCollapse:
         self.t_zero = None
         self.t_rmin = None
         self.t_rmina = None
+        self.t_dynr = None
+        self.t_dynnext = None
         self.gamma = 0
         self.H = 0
         self.safety_factor = 1e-3
         self.shell_thickness = None
         self.snapshots = []
         self.save_filename = None
+        self.deque_size = 100
+        self.deque = deque(maxlen=self.deque_size)
 
     def _update_from_config(self, config):
         for key, value in config.items():
@@ -196,7 +201,7 @@ class SphericalCollapse:
         # timescales
         self.timescale_func()
         self.timestep_func()
-        self.save()
+        self._save_if_necessary()
         logger.info("Simulation setup complete")
 
     def run(self):
@@ -218,8 +223,38 @@ class SphericalCollapse:
         self.timestep_func()
         self.detect_shell_crossings()
 
+    def update_deque(self):
+        """
+        Update the deque with the current simulation parameters.
+        Each element in the deque is a dictionary containing the same parameters as in the `save` method.
+        """
+        data = {
+            't': self.t,
+            'dt': self.dt,
+            'r': self.r.copy(),
+            'v': self.v.copy(),
+            'a': self.a.copy(),
+            'm_enc': self.m_enc.copy(),
+            'e_tot': self.e_tot.copy() if self.e_tot is not None else None,
+            'e_g': self.e_g.copy() if self.e_g is not None else None,
+            'e_k': self.e_k.copy() if self.e_k is not None else None,
+            'e_r': self.e_r.copy() if self.e_r is not None else None,
+            't_dyn': self.t_dyn,
+            't_vel': self.t_vel,
+            't_acc': self.t_acc,
+            't_cross': self.t_cross,
+            't_zero': self.t_zero,
+            't_rmin': self.t_rmin,
+            't_rmina': self.t_rmina,
+            't_dynr': self.t_dynr,
+            't_dynnext': self.t_dynnext,
+            'num_crossing': self.num_crossing,
+        }
+        self.deque.append(data)
+
     def _save_if_necessary(self):
         should_save = False
+        self.update_deque()
          # Check if it's time for a periodic save
         if self.t >= self.next_save_time:
             should_save = True
@@ -261,7 +296,10 @@ class SphericalCollapse:
             't_zero': self.t_zero,
             't_rmin': self.t_rmin,
             't_rmina': self.t_rmina,
+            't_dynr': self.t_dynr,
+            't_dynnext': self.t_dynnext,
             'num_crossing': self.num_crossing,
+            'deque': list(self.deque),
         }
         self.snapshots.append(data)
 

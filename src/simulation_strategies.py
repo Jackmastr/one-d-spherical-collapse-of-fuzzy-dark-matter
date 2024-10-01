@@ -410,6 +410,15 @@ def calculate_t_dyn(G, m_enc, r):
     return np.min(1/np.sqrt(G * m_enc / r**3))
 
 @njit
+def calculate_t_dynnext(G, m_enc, r, v, dt):
+    r_next = r + v * dt
+    return np.min(1/np.sqrt(G * m_enc / r_next**3))
+
+@njit
+def calculate_t_dynr(G, m_enc, r):
+    return np.min(1/np.sqrt(G * m_enc / r**3) * r)
+
+@njit
 def calculate_t_vel(r, v, r_max, eps=1e-2):
     return np.min(r_max / (np.abs(v)+eps))
 
@@ -486,6 +495,8 @@ class CompositeTimeScaleStrategy(TimeScaleStrategy):
             "vel": lambda sim: calculate_t_vel(sim.r, sim.v, sim.r_max),
             "acc": lambda sim: calculate_t_acc(sim.r, sim.a, sim.r_max),
             "cross": lambda sim: calculate_t_cross(sim.r, sim.v),
+            "dynnext": lambda sim: calculate_t_dynnext(sim.G, sim.m_enc, sim.r, sim.v, sim.dt),
+            "dynr": lambda sim: calculate_t_dynr(sim.G, sim.m_enc, sim.r),
         }
         
         components = [
@@ -507,6 +518,10 @@ def save_on_direction_change(v, prev_v):
         return False
     return np.any(v * prev_v < 0)
 
+#@njit
+def save_more_on_direction_change(v, prev_vs):
+    return np.any(np.any(v * prev_v < 0) for prev_v in prev_vs if prev_v is not None)
+
 class CompositeSaveStrategy(SaveStrategy):
     def __init__(self, components: List[SaveComponent]):
         self.components = components
@@ -521,6 +536,7 @@ class CompositeSaveStrategy(SaveStrategy):
         component_map = {
             "default": lambda sim: save_default(),
             "vflip": lambda sim: save_on_direction_change(sim.v, sim.prev_v),
+            "vflipmore": lambda sim: save_more_on_direction_change(sim.v, [sim.deque[i]['v'] for i in range(len(sim.deque))]),
         }
         
         components = [
@@ -532,7 +548,6 @@ class CompositeSaveStrategy(SaveStrategy):
             raise ValueError("No valid save components specified")
         
         return cls(components)
-
 @name_strategy("const")
 class ConstTimeStepStrategy(TimeStepStrategy):
     def __call__(self, sim):
